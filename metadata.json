@@ -1,0 +1,5 @@
+{
+  "name": "SteelCalc Eurocode 3",
+  "description": "Steel cutting optimization and BOQ generator for Eurocode 3 standards",
+  "requestFramePermissions": []
+}
