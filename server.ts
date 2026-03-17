@@ -11,46 +11,35 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Logger
   app.use((req, res, next) => {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
     next();
   });
+
+  // Serve public assets
+  app.use(express.static(path.join(process.cwd(), "public")));
 
   // API routes
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
 
-  // Serve public assets
-  app.use(express.static(path.join(process.cwd(), "public")));
-
   if (process.env.NODE_ENV !== "production") {
     console.log("Starting in DEVELOPMENT mode");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
-      root: process.cwd(),
-      base: "/",
     });
-    
     app.use(vite.middlewares);
-
-    app.use("*", async (req, res, next) => {
+    
+    app.use('*', async (req, res, next) => {
       const url = req.originalUrl;
       
-      // Skip fallback for files that look like assets or source code
-      if (url.includes(".") && !url.endsWith(".html")) {
-        console.log(`[Dev] Skipping SPA fallback for: ${url}`);
-        return next();
-      }
-
-      console.log(`[Dev] SPA Fallback: ${url}`);
       try {
         const indexPath = path.resolve(process.cwd(), "index.html");
         let template = await fs.readFile(indexPath, "utf-8");
         template = await vite.transformIndexHtml(url, template);
-        res.status(200).set({ "Content-Type": "text/html" }).end(template);
+        res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
       } catch (e) {
         console.error(`Vite Transform Error: ${e}`);
         vite.ssrFixStacktrace(e as Error);

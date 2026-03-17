@@ -23,6 +23,7 @@ import {
   Maximize2,
   HardHat,
   Building2,
+  Globe,
   Image as ImageIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -48,11 +49,11 @@ import html2canvas from 'html2canvas';
 
 import { supabase } from './supabase';
 import { User } from '@supabase/supabase-js';
-import { ErrorBoundary } from './AppErrorBoundary';
+import ErrorBoundary from './ErrorBoundary.tsx';
 
 import { ProjectItem, DevisConfig, ItemType, OptimizationStrategy, StockItem, SteelGrade, CompanyInfo, Project } from './types';
 import { STEEL_PROFILES, STANDARD_BAR_LENGTHS, STANDARD_PLATE_SIZES } from './constants';
-import { calculateSteelRequirements } from './utils/calculations';
+import { calculateSteelRequirements, getOptimizationOptions } from './utils/calculations';
 import { parseSteelList } from './services/aiService';
 import { Language, translations } from './i18n';
 
@@ -60,9 +61,48 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+function HiddenErrorCorrector() {
+  const [errors, setErrors] = useState<string[]>([]);
+  
+  useEffect(() => {
+    const handleError = (event: ErrorEvent) => {
+      console.log("AI Error Corrector: Intercepted error", event.message);
+      setErrors(prev => [...prev, event.message].slice(-5));
+      // Silent correction logic could go here
+    };
+    
+    window.addEventListener('error', handleError);
+    return () => window.removeEventListener('error', handleError);
+  }, []);
+
+  return (
+    <div className="fixed bottom-4 right-4 z-50 pointer-events-none opacity-0 hover:opacity-100 transition-opacity">
+      <div className="bg-black/80 text-emerald-400 text-[10px] p-2 rounded-lg font-mono border border-emerald-500/30">
+        AI_CORRECTOR_ACTIVE: {errors.length}
+      </div>
+    </div>
+  );
+}
+
+function InstallButton({ onClick, t }: { onClick: () => void, t: any }) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-all shadow-lg shadow-indigo-500/20"
+    >
+      <Download className="w-4 h-4" />
+      <div className="text-left">
+        <div className="text-xs font-bold leading-none">{t.installApp}</div>
+        <div className="text-[10px] opacity-80 leading-tight">{t.installAppDesc}</div>
+      </div>
+    </button>
+  );
+}
+
 export default function AppWrapper() {
   return (
     <ErrorBoundary>
+      <HiddenErrorCorrector />
       <App />
     </ErrorBoundary>
   );
@@ -93,7 +133,8 @@ function App() {
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [language, setLanguage] = useState<Language>('fr');
   const isRtl = language === 'ar';
-  const [projectName, setProjectName] = useState<string>(isRtl ? "مشروع جديد" : "Nouveau Projet");
+  const t = translations[language];
+  const [projectName, setProjectName] = useState<string>(t.newProjectDefaultName);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -102,6 +143,9 @@ function App() {
   const [includeWelding, setIncludeWelding] = useState(false);
   const [includeExtraPlates, setIncludeExtraPlates] = useState(false);
   const [includeBolts, setIncludeBolts] = useState(false);
+
+  const [selectedStrategy, setSelectedStrategy] = useState<OptimizationStrategy>(OptimizationStrategy.FIRST_FIT);
+  const [showOptimizationOptions, setShowOptimizationOptions] = useState(false);
 
   const [companyInfo, setCompanyInfo] = useState<CompanyInfo>({ name: '', description: '', logo: '', address: '', phone: '', email: '' });
 
@@ -155,13 +199,9 @@ function App() {
       console.error("Auth Error:", error);
       let message = error.message;
       if (message === "Invalid login credentials") {
-        message = isRtl 
-          ? "بيانات الدخول غير صحيحة. تأكد من البريد الإلكتروني وكلمة المرور. إذا كنت مستخدماً جديداً، يرجى إنشاء حساب أولاً." 
-          : "Identifiants invalides. Vérifiez votre email/mot de passe. Si vous êtes nouveau, veuillez d'abord créer un compte.";
+        message = t.authInvalidCredentials;
       } else if (message.includes("confirmation email")) {
-        message = isRtl 
-          ? "تم إنشاء الحساب ولكن فشل إرسال بريد التأكيد. يرجى مراجعة البريد العشوائي (Spam) أو المحاولة مرة أخرى لاحقاً. فريق GC58 يعمل على حل المشكلة." 
-          : "Compte créé mais l'envoi de l'email de confirmation a échoué. Vérifiez vos spams ou réessayez plus tard. L'équipe GC58 travaille sur le problème.";
+        message = t.authEmailSentError;
       }
       setAuthError(message);
     } finally {
@@ -301,17 +341,20 @@ function App() {
 
   const handleClearProject = () => {
     setItems([]);
-    setProjectName(language === 'ar' ? "مشروع جديد" : "Nouveau Projet");
+    setProjectName(t.newProjectDefaultName);
     setShowClearConfirm(false);
   };
   const [selectedSheet, setSelectedSheet] = useState<any>(null);
   const [zoomLevel, setZoomLevel] = useState(1);
 
-  const t = translations[language];
-  
   const results = useMemo(() => {
     return calculateSteelRequirements(items, standardBarLength, standardPlateSize, optimizationStrategy, steelGrade);
   }, [items, standardBarLength, standardPlateSize, optimizationStrategy, steelGrade]);
+
+  const optimizationOptions = useMemo(() => {
+    if (items.length === 0) return [];
+    return getOptimizationOptions(items, standardBarLength, standardPlateSize, steelGrade);
+  }, [items, standardBarLength, standardPlateSize, steelGrade]);
 
   const totalWeightWithExtras = useMemo(() => {
     const welding = includeWelding ? results.grossWeight * 0.05 : 0;
@@ -428,7 +471,7 @@ function App() {
       setTimeout(() => setImportSuccess(false), 3000);
     } catch (error: any) {
       console.error("Error parsing file:", error);
-      setUploadError(error.message || "Erreur lors de la lecture du fichier par l'IA.");
+      setUploadError(error.message || t.errorParsingFile);
     } finally {
       setIsUploading(false);
     }
@@ -465,11 +508,11 @@ function App() {
       doc.text("GC58", 105, 80, { align: 'center' });
       doc.setFontSize(16);
       doc.setTextColor(245, 158, 11); // Amber 500
-      doc.text("CIVIL ENGINEERING", 105, 92, { align: 'center' });
+      doc.text(t.civilEngineering, 105, 92, { align: 'center' });
       
       doc.setTextColor(255, 255, 255);
       doc.setFontSize(24);
-      doc.text(isRtl ? "مخططات التقطيع التفصيلية" : "Plans de Débitage Détaillés", 105, 120, { align: 'center' });
+      doc.text(t.detailedCuttingPlans, 105, 120, { align: 'center' });
       
       doc.setFontSize(16);
       doc.text(projectName, 105, 130, { align: 'center' });
@@ -485,7 +528,7 @@ function App() {
       doc.addPage();
       doc.setTextColor(15, 23, 42);
       doc.setFontSize(18);
-      doc.text(isRtl ? "التحليل البياني للتقطيع" : "Analyses Graphiques du Débitage", 14, 25);
+      doc.text(t.graphicalAnalysis, 14, 25);
       
       let chartY = 35;
       chartY = await addChartToPDF('weight-chart-container', chartY, 70);
@@ -497,14 +540,14 @@ function App() {
       doc.addPage();
       doc.setTextColor(15, 23, 42);
       doc.setFontSize(18);
-      doc.text(isRtl ? "ملخص عملية التقطيع" : "Résumé du Débitage", 14, 25);
+      doc.text(t.cuttingSummary, 14, 25);
       
       autoTable(doc, {
         startY: 35,
-        head: [[isRtl ? 'النوع' : 'Type', isRtl ? 'العدد الإجمالي' : 'Quantité Totale', isRtl ? 'الوزن الإجمالي' : 'Poids Total']],
+        head: [[t.type, t.totalQuantity, t.totalWeight]],
         body: [
-          [isRtl ? 'قضبان الحديد' : 'Profilés (Barres)', results.barPlans.reduce((acc, p) => acc + p.bars.length, 0).toString(), `${results.barPlans.reduce((acc, p) => acc + p.grossWeight, 0).toFixed(2)} kg`],
-          [isRtl ? 'الصفائح' : 'Tôles (Platines)', results.platePlans.reduce((acc, p) => acc + p.sheets.length, 0).toString(), `${results.platePlans.reduce((acc, p) => acc + p.grossWeight, 0).toFixed(2)} kg`],
+          [t.profiles, results.barPlans.reduce((acc, p) => acc + p.bars.length, 0).toString(), `${results.barPlans.reduce((acc, p) => acc + p.grossWeight, 0).toFixed(2)} ${t.kg}`],
+          [t.plates, results.platePlans.reduce((acc, p) => acc + p.sheets.length, 0).toString(), `${results.platePlans.reduce((acc, p) => acc + p.grossWeight, 0).toFixed(2)} ${t.kg}`],
         ],
         headStyles: { fillColor: [31, 41, 55] },
       });
@@ -517,7 +560,7 @@ function App() {
         currentY = 25;
         doc.setTextColor(79, 70, 229);
         doc.setFontSize(20);
-        doc.text(isRtl ? "تفاصيل تقطيع القضبان" : "Détails Débitage Profilés", 14, currentY);
+        doc.text(t.profileCuttingDetails, 14, currentY);
         currentY += 15;
 
         results.barPlans.forEach((plan) => {
@@ -537,7 +580,7 @@ function App() {
             doc.setFontSize(9);
             doc.setFont("helvetica", "normal");
             doc.setTextColor(100, 116, 139);
-            doc.text(`${isRtl ? 'قضيب' : 'Barre'} #${idx + 1} (${standardBarLength}m) - ${isRtl ? 'الاستخدام' : 'Utilisation'}: ${((bar.usedLength / bar.totalLength) * 100).toFixed(1)}%`, 14, currentY);
+            doc.text(`${t.bar} #${idx + 1} (${standardBarLength}m) - ${t.utilisation}: ${((bar.usedLength / bar.totalLength) * 100).toFixed(1)}%`, 14, currentY);
             currentY += 4;
 
             // Draw Bar
@@ -588,7 +631,7 @@ function App() {
         currentY = 25;
         doc.setTextColor(16, 185, 129);
         doc.setFontSize(20);
-        doc.text(isRtl ? "تفاصيل تقطيع الصفائح" : "Détails Débitage Platines", 14, currentY);
+        doc.text(t.plateCuttingDetails, 14, currentY);
         currentY += 15;
 
         results.platePlans.forEach((plan) => {
@@ -599,7 +642,7 @@ function App() {
           doc.setTextColor(6, 78, 59);
           doc.setFontSize(12);
           doc.setFont("helvetica", "bold");
-          doc.text(`${isRtl ? 'بلاتين' : 'Platine'} Ep. ${plan.thickness}mm`, 18, currentY + 7);
+          doc.text(`${t.plate} ${t.ep} ${plan.thickness}mm`, 18, currentY + 7);
           currentY += 15;
 
           plan.sheets.forEach((sheet, idx) => {
@@ -608,7 +651,7 @@ function App() {
             doc.setFontSize(9);
             doc.setFont("helvetica", "normal");
             doc.setTextColor(100, 116, 139);
-            doc.text(`${isRtl ? 'صفيحة' : 'Tôle'} #${idx + 1} (${sheet.width}x${sheet.length}m) - ${isRtl ? 'الاستخدام' : 'Utilisation'}: ${((sheet.usedArea / (sheet.width * sheet.length)) * 100).toFixed(1)}%`, 14, currentY);
+            doc.text(`${t.sheet} #${idx + 1} (${sheet.width}x${sheet.length}m) - ${t.utilisation}: ${((sheet.usedArea / (sheet.width * sheet.length)) * 100).toFixed(1)}%`, 14, currentY);
             currentY += 5;
 
             // Draw Plate Layout
@@ -672,20 +715,20 @@ function App() {
         doc.setFont("helvetica", "bold");
         doc.text(companyInfo.name || "GC58", 170, 15, { align: 'right' });
         doc.setFontSize(6);
-        doc.text(companyInfo.description || "CIVIL ENGINEERING", 170, 18, { align: 'right' });
+        doc.text(companyInfo.description || t.civilEngineering, 170, 18, { align: 'right' });
         doc.setDrawColor(226, 232, 240);
         doc.line(14, 20, 196, 20);
 
         // Footer
         doc.setFontSize(8);
         doc.setTextColor(150);
-        doc.text(`${companyInfo.name || "GC58"} - ${isRtl ? "مخططات التقطيع" : "Plans de Débitage"} | Page ${i} / ${pageCount}`, 105, 285, { align: 'center' });
+        doc.text(`${companyInfo.name || "GC58"} - ${t.cuttingPlan} | ${t.page} ${i} / ${pageCount}`, 105, 285, { align: 'center' });
       }
 
       doc.save(`Plans_Debitage_${projectName.replace(/\s+/g, '_')}_${timestamp.replace(/\//g, '-')}.pdf`);
     } catch (error) {
       console.error("Cutting Plans PDF Export Error:", error);
-      alert("Erreur lors de la génération des plans de débitage.");
+      alert(t.errorGeneratingPDF);
     } finally {
       setIsExporting(false);
     }
@@ -730,11 +773,11 @@ function App() {
       doc.text(companyInfo.name || "GC58", 105, 80, { align: 'center' });
       doc.setFontSize(14);
       doc.setTextColor(245, 158, 11); // Amber 500
-      doc.text(companyInfo.description || "CIVIL ENGINEERING", 105, 92, { align: 'center' });
+      doc.text(companyInfo.description || t.civilEngineering, 105, 92, { align: 'center' });
       
       doc.setTextColor(255, 255, 255);
       doc.setFontSize(24);
-      doc.text(isRtl ? "تقرير تحسين تقطيع الحديد" : "Rapport d'Optimisation de Débitage", 105, 120, { align: 'center' });
+      doc.text(t.reportTitle, 105, 120, { align: 'center' });
       
       doc.setFontSize(18);
       doc.setTextColor(148, 163, 184);
@@ -751,19 +794,20 @@ function App() {
       doc.addPage();
       doc.setTextColor(15, 23, 42);
       doc.setFontSize(20);
-      doc.text(isRtl ? "ملخص المشروع" : "Résumé du Projet", 14, 25);
+      doc.text(t.projectSummary, 14, 25);
       
       autoTable(doc, {
         startY: 35,
-        head: [[isRtl ? 'المؤشر' : 'Indicateur', isRtl ? 'القيمة' : 'Valeur']],
+        head: [[t.indicator, t.value]],
         body: [
-          [isRtl ? 'اسم المشروع' : 'Nom du Projet', projectName],
-          [isRtl ? 'الوزن الصافي' : 'Poids Net', `${results.netWeight.toFixed(2)} kg`],
-          [isRtl ? 'الوزن الإجمالي' : 'Poids Brut', `${results.grossWeight.toFixed(2)} kg`],
-          [isRtl ? 'وزن الخردة' : 'Poids des Chutes', `${results.scrapWeight.toFixed(2)} kg`],
-          [isRtl ? 'نسبة الخردة' : 'Taux de Chute', `${results.scrapPercentage.toFixed(2)}%`],
-          [isRtl ? 'عدد القضبان' : 'Nombre de Barres', results.totalStandardBars.toString()],
-          [isRtl ? 'درجة الحديد' : 'Nuance d\'Acier', steelGrade],
+          [t.projectNameLabel, projectName],
+          [t.netWeight, `${results.netWeight.toFixed(2)} ${t.kg}`],
+          [t.grossWeight, `${results.grossWeight.toFixed(2)} ${t.kg}`],
+          [t.scrap, `${results.scrapWeight.toFixed(2)} ${t.kg}`],
+          [t.scrapPercentage, `${results.scrapPercentage.toFixed(2)}%`],
+          [t.optimizationStrategy, t[`strategy_${optimizationStrategy}` as keyof typeof t] || optimizationStrategy],
+          [t.totalBars, results.totalStandardBars.toString()],
+          [t.steelGrade, steelGrade],
         ],
         theme: 'grid',
         headStyles: { fillColor: [31, 41, 55] },
@@ -773,7 +817,7 @@ function App() {
       // Charts Section
       let currentY = (doc as any).lastAutoTable.finalY + 20;
       doc.setFontSize(16);
-      doc.text(isRtl ? "التحليل البياني" : "Analyses Graphiques", 14, currentY);
+      doc.text(t.graphicalAnalysis, 14, currentY);
       currentY += 10;
       
       currentY = await addChartToPDF('weight-chart-container', currentY, 70);
@@ -789,7 +833,7 @@ function App() {
       doc.addPage();
       doc.setTextColor(15, 23, 42);
       doc.setFontSize(18);
-      doc.text(isRtl ? "جدول الكميات التفصيلي" : "Bordereau Quantitatif Détaillé", 14, 25);
+      doc.text(t.boqDetailed, 14, 25);
       
       const boqBody = [
         ...results.barPlans.map(plan => [
@@ -807,8 +851,8 @@ function App() {
             : `${standardPlateSize.width}x${standardPlateSize.length}m`;
 
           return [
-            `${isRtl ? 'بلاتين' : 'Platine'} Ep. ${plan.thickness}mm (${sheetSize})`,
-            isRtl ? 'قطعة' : 'U',
+            `${t.plate} ${t.ep} ${plan.thickness}mm (${sheetSize})`,
+            t.unit,
             plan.sheets.length.toString(),
             (plan.sheets.length > 0 ? (plan.grossWeight / plan.sheets.length).toFixed(2) : "0.00"),
             plan.grossWeight.toFixed(2)
@@ -817,12 +861,12 @@ function App() {
         ...(includeWelding ? [[t.welding, '%', '5%', '-', (results.grossWeight * 0.05).toFixed(2)]] : []),
         ...(includeExtraPlates ? [[t.extraPlates, '%', '5%', '-', (results.grossWeight * 0.05).toFixed(2)]] : []),
         ...(includeBolts ? [[t.bolts, '%', '2%', '-', (results.grossWeight * 0.02).toFixed(2)]] : []),
-        [{ content: isRtl ? 'المجموع الإجمالي' : 'TOTAL GÉNÉRAL', colSpan: 4, styles: { halign: 'right' as const, fontStyle: 'bold' as const } }, { content: `${totalWeightWithExtras.toFixed(2)} kg`, styles: { fontStyle: 'bold' as const } }]
+        [{ content: t.totalGeneral, colSpan: 4, styles: { halign: 'right' as const, fontStyle: 'bold' as const } }, { content: `${totalWeightWithExtras.toFixed(2)} ${t.kg}`, styles: { fontStyle: 'bold' as const } }]
       ];
 
       autoTable(doc, {
         startY: 35,
-        head: [[isRtl ? 'البيان' : 'Désignation', isRtl ? 'الوحدة' : 'Unité', isRtl ? 'الكمية' : 'Quantité', isRtl ? 'الوزن الوحدوي' : 'Poids Unitaire', isRtl ? 'الإجمالي (كغ)' : 'Total (kg)']],
+        head: [[t.designation, t.unit, t.quantity, t.unitWeight, `${t.total} (${t.kg})`]],
         body: boqBody,
         headStyles: { fillColor: [79, 70, 229] },
         styles: { fontSize: 9 }
@@ -831,7 +875,7 @@ function App() {
       // Page 4: Financial Quote (Devis)
       doc.addPage();
       doc.setFontSize(18);
-      doc.text(isRtl ? "العرض المالي (Devis)" : "Offre Financière (Devis)", 14, 25);
+      doc.text(t.financialOffer, 14, 25);
       
       const totalHT = totalWeightWithExtras * devisConfig.unitPricePerKg;
       const tva = totalHT * (devisConfig.taxRate / 100);
@@ -839,12 +883,12 @@ function App() {
 
       autoTable(doc, {
         startY: 35,
-        head: [[isRtl ? 'البند' : 'Poste', isRtl ? 'طريقة الحساب' : 'Détail Calcul', isRtl ? 'المبلغ' : 'Montant']],
+        head: [[t.poste, t.calculationDetail, t.amount]],
         body: [
-          [isRtl ? 'توريد وتشكيل الحديد' : 'Fourniture et Façonnage Acier', `${totalWeightWithExtras.toFixed(2)} kg x ${devisConfig.unitPricePerKg} ${devisConfig.currency}/kg`, `${totalHT.toFixed(2)} ${devisConfig.currency}`],
-          [{ content: isRtl ? 'المجموع الصافي (HT)' : 'Total Hors Taxe (HT)', colSpan: 2, styles: { halign: 'right' } }, `${totalHT.toFixed(2)} ${devisConfig.currency}`],
-          [{ content: `${isRtl ? 'الضريبة' : 'TVA'} (${devisConfig.taxRate}%)`, colSpan: 2, styles: { halign: 'right' } }, `${tva.toFixed(2)} ${devisConfig.currency}`],
-          [{ content: isRtl ? 'المجموع النهائي (TTC)' : 'TOTAL TTC', colSpan: 2, styles: { halign: 'right', fontStyle: 'bold', fontSize: 12 } }, { content: `${totalTTC.toFixed(2)} ${devisConfig.currency}`, styles: { fontStyle: 'bold', fontSize: 12 } }],
+          [t.steelSupplyAndFabrication, `${totalWeightWithExtras.toFixed(2)} ${t.kg} x ${devisConfig.unitPricePerKg} ${devisConfig.currency}/${t.kg}`, `${totalHT.toFixed(2)} ${devisConfig.currency}`],
+          [{ content: t.totalHT, colSpan: 2, styles: { halign: 'right' } }, `${totalHT.toFixed(2)} ${devisConfig.currency}`],
+          [{ content: `${t.tax} (${devisConfig.taxRate}%)`, colSpan: 2, styles: { halign: 'right' } }, `${tva.toFixed(2)} ${devisConfig.currency}`],
+          [{ content: t.totalTTC, colSpan: 2, styles: { halign: 'right', fontStyle: 'bold', fontSize: 12 } }, { content: `${totalTTC.toFixed(2)} ${devisConfig.currency}`, styles: { fontStyle: 'bold', fontSize: 12 } }],
         ],
         headStyles: { fillColor: [31, 41, 55] },
         styles: { fontSize: 10, cellPadding: 6 }
@@ -870,20 +914,20 @@ function App() {
         doc.setFont("helvetica", "bold");
         doc.text(companyInfo.name || "GC58", 170, 15, { align: 'right' });
         doc.setFontSize(6);
-        doc.text(companyInfo.description || "CIVIL ENGINEERING", 170, 18, { align: 'right' });
+        doc.text(companyInfo.description || t.civilEngineering, 170, 18, { align: 'right' });
         doc.setDrawColor(226, 232, 240);
         doc.line(14, 20, 196, 20);
 
         // Footer
         doc.setFontSize(8);
         doc.setTextColor(150);
-        doc.text(`${companyInfo.name || "GC58"} - ${projectName} | Page ${i} / ${pageCount}`, 105, 285, { align: 'center' });
+        doc.text(`${companyInfo.name || "GC58"} - ${projectName} | ${t.page} ${i} / ${pageCount}`, 105, 285, { align: 'center' });
       }
 
       doc.save(`Rapport_${projectName.replace(/\s+/g, '_')}_${timestamp.replace(/\//g, '-')}.pdf`);
     } catch (error) {
       console.error("PDF Export Error:", error);
-      alert("Erreur lors de la génération du PDF.");
+      alert(t.errorGeneratingPDF);
     } finally {
       setIsExporting(false);
     }
@@ -899,8 +943,8 @@ function App() {
   });
 
   const chartData = [
-    { name: isRtl ? 'الوزن الصافي' : 'Poids Net', value: results.netWeight, color: '#10b981' },
-    { name: isRtl ? 'الخردة' : 'Chutes', value: results.scrapWeight, color: '#ef4444' }
+    { name: t.netWeight, value: results.netWeight, color: '#10b981' },
+    { name: t.scrap, value: results.scrapWeight, color: '#ef4444' }
   ];
 
   const profileDistributionData = useMemo(() => {
@@ -964,25 +1008,25 @@ function App() {
           
           <form onSubmit={handleEmailAuth} className="space-y-4 mb-6">
             <div className="space-y-1 text-left">
-              <label className="text-xs font-bold text-slate-400 uppercase tracking-wider ml-1">Email</label>
+              <label className="text-xs font-bold text-slate-400 uppercase tracking-wider ml-1">{t.emailLabel}</label>
               <input 
                 type="email" 
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
-                placeholder="votre@email.com"
+                placeholder={t.emailPlaceholder}
               />
             </div>
             <div className="space-y-1 text-left">
-              <label className="text-xs font-bold text-slate-400 uppercase tracking-wider ml-1">Mot de passe</label>
+              <label className="text-xs font-bold text-slate-400 uppercase tracking-wider ml-1">{t.passwordLabel}</label>
               <input 
                 type="password" 
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full px-5 py-3 bg-slate-50 border border-slate-100 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
-                placeholder="••••••••"
+                placeholder={t.passwordPlaceholder}
               />
             </div>
             
@@ -993,8 +1037,8 @@ function App() {
                   {authError}
                 </p>
                 <div className="text-slate-400 font-normal space-y-1 mt-2 border-t border-red-100 pt-2">
-                  <p>• {isRtl ? "تأكد من أنك قمت بإنشاء حساب (Sign Up) قبل محاولة الدخول." : "Assurez-vous d'avoir créé un compte (Sign Up) avant de vous connecter."}</p>
-                  <p>• {isRtl ? "تأكد من تفعيل Email/Password في إعدادات Supabase Auth." : "Vérifiez que Email/Password est activé dans Supabase Auth."}</p>
+                  <p>• {t.authSignUpNotice}</p>
+                  <p>• {t.authSupabaseNotice}</p>
                 </div>
               </div>
             )}
@@ -1003,10 +1047,10 @@ function App() {
               <div className="p-4 bg-emerald-50 border border-emerald-100 rounded-xl text-emerald-600 text-xs font-bold text-left">
                 <p className="flex items-center gap-2">
                   <Check size={16} />
-                  {isRtl ? "تم إنشاء الحساب بنجاح!" : "Compte créé avec succès !"}
+                  {t.authSuccess}
                 </p>
                 <p className="mt-1 font-normal text-slate-500">
-                  {isRtl ? "يرجى التحقق من بريدك الإلكتروني لتفعيل الحساب." : "Veuillez vérifier votre email pour activer votre compte."}
+                  {t.authCheckEmail}
                 </p>
               </div>
             )}
@@ -1016,7 +1060,7 @@ function App() {
               disabled={isAuthLoading}
               className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 disabled:opacity-50"
             >
-              {isAuthLoading ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : (isSignUp ? "Créer un compte" : t.loggingIn)}
+              {isAuthLoading ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : (isSignUp ? t.createAccount : t.loggingIn)}
             </button>
           </form>
 
@@ -1024,12 +1068,12 @@ function App() {
             onClick={() => { setIsSignUp(!isSignUp); setAuthError(null); }}
             className="mt-6 text-xs font-bold text-indigo-600 hover:text-indigo-700 transition-colors"
           >
-            {isSignUp ? "Déjà un compte ? Se connecter" : "Pas de compte ? Créer un compte"}
+            {isSignUp ? t.alreadyHaveAccount : t.noAccountYet}
           </button>
           
           <div className="mt-10 flex items-center justify-center gap-2">
             <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Secure Cloud Sync Enabled</span>
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{t.secureCloudSync}</span>
           </div>
         </div>
       </div>
@@ -1142,7 +1186,7 @@ function App() {
             className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-slate-500 hover:bg-slate-50 transition-all duration-200 cursor-pointer"
           >
             <Info size={20} className="text-amber-500" />
-            <span>{isRtl ? "حول البرنامج" : "À propos"}</span>
+            <span>{t.aboutApp}</span>
           </button>
         </nav>
 
@@ -1150,7 +1194,7 @@ function App() {
           <div className="bg-slate-50 rounded-2xl p-4">
             <div className="flex items-center gap-2 mb-2 text-slate-400">
               <Settings size={14} />
-              <span className="text-[10px] font-bold uppercase tracking-wider">Configuration</span>
+              <span className="text-[10px] font-bold uppercase tracking-wider">{t.configuration}</span>
             </div>
             <label className="block text-xs font-medium text-slate-600 mb-1">Longueur Barre (m)</label>
             <select 
@@ -1162,6 +1206,25 @@ function App() {
                 <option key={l} value={l}>{l}m</option>
               ))}
             </select>
+            
+            <div className="mt-4 pt-4 border-t border-slate-100">
+              <div className="flex items-center gap-2 mb-2 text-slate-400">
+                <Globe size={14} />
+                <span className="text-[10px] font-bold uppercase tracking-wider">{t.deployment}</span>
+              </div>
+              <div className="flex items-center gap-1.5 px-2 py-1 bg-emerald-50 text-emerald-600 rounded-lg border border-emerald-100 mb-2">
+                <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                <span className="text-[10px] font-bold uppercase tracking-wider">Live on AI Studio</span>
+              </div>
+              <a 
+                href="https://ais-pre-vijq45czwoay4bouhgejym-620144767677.europe-west2.run.app" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="block text-[10px] text-indigo-600 hover:text-indigo-700 transition-colors font-bold underline truncate"
+              >
+                {t.directPublishLink}
+              </a>
+            </div>
           </div>
         </div>
         <div className="p-4 border-t border-slate-100 space-y-2">
@@ -1171,7 +1234,7 @@ function App() {
               className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-emerald-50 text-emerald-600 rounded-2xl font-bold hover:bg-emerald-100 transition-all border border-emerald-100 mb-2"
             >
               <Download size={18} />
-              {isRtl ? "تثبيت البرنامج" : "Installer l'App"}
+              {t.installAppShort}
             </button>
           )}
           <button 
@@ -1191,7 +1254,7 @@ function App() {
             ) : (
               <FileText size={18} />
             )}
-            {isExporting ? (isRtl ? "جاري التحميل..." : "Chargement...") : (isRtl ? "تحميل التقرير" : "Télécharger Rapport")}
+            {isExporting ? t.downloading : t.downloadReport}
           </button>
           <button 
             onClick={handleExportCuttingPlansPDF}
@@ -1203,7 +1266,7 @@ function App() {
             ) : (
               <Layers size={18} />
             )}
-            {isExporting ? (isRtl ? "جاري التحميل..." : "Chargement...") : (isRtl ? "مخططات التقطيع" : "Plans de Débitage")}
+            {isExporting ? t.downloading : t.cuttingPlan}
           </button>
         </div>
       </aside>
@@ -1243,7 +1306,7 @@ function App() {
                       onClick={() => setShowWelcome(false)}
                       className="text-[10px] font-bold text-indigo-600 hover:text-indigo-700 transition-colors"
                     >
-                      {isRtl ? "إغلاق" : "Fermer"}
+                      {t.close}
                     </button>
                   </div>
                 </div>
@@ -1275,7 +1338,7 @@ function App() {
                   value={projectName}
                   onChange={(e) => setProjectName(e.target.value)}
                   className="text-2xl lg:text-3xl font-bold text-slate-900 bg-transparent border-none focus:ring-0 p-0 w-full"
-                  placeholder={isRtl ? "اسم المشروع" : "Nom du Projet"}
+                  placeholder={t.projectNameLabel}
                 />
                 <p className="text-slate-500 mt-1 text-sm lg:text-base">
                   {activeTab === 'input' && t.tabInputDesc}
@@ -1342,6 +1405,24 @@ function App() {
               </div>
             )}
             
+            {showInstallButton && (
+              <InstallButton onClick={handleInstallClick} t={t} />
+            )}
+            <div className="hidden sm:flex flex-col items-end">
+              <div className="flex items-center gap-1.5 px-2 py-1 bg-emerald-50 text-emerald-600 rounded-lg border border-emerald-100">
+                <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                <span className="text-[10px] font-bold uppercase tracking-wider">Live on AI Studio</span>
+              </div>
+              <a 
+                href="https://ais-pre-vijq45czwoay4bouhgejym-620144767677.europe-west2.run.app" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                className="text-[8px] text-slate-400 hover:text-indigo-600 transition-colors mt-1 underline"
+              >
+                {t.directPublishLink}
+              </a>
+            </div>
+
             <div className="relative">
               <button 
                 onClick={() => setShowClearConfirm(!showClearConfirm)}
@@ -1353,7 +1434,7 @@ function App() {
                 )}
               >
                 <RefreshCcw size={16} className={cn(showClearConfirm && "animate-spin")} />
-                {showClearConfirm ? (isRtl ? "تأكيد المسح؟" : "Confirmer ?") : t.clearProject}
+                {showClearConfirm ? t.confirmClear : t.clearProject}
               </button>
               
               {showClearConfirm && (
@@ -1366,13 +1447,13 @@ function App() {
                     onClick={handleClearProject}
                     className="px-3 py-1.5 bg-red-600 text-white text-xs font-bold rounded-lg hover:bg-red-700 transition-colors cursor-pointer"
                   >
-                    {isRtl ? "نعم، امسح" : "Oui, effacer"}
+                    {t.yesClear}
                   </button>
                   <button 
                     onClick={() => setShowClearConfirm(false)}
                     className="px-3 py-1.5 bg-slate-100 text-slate-600 text-xs font-bold rounded-lg hover:bg-slate-200 transition-colors cursor-pointer"
                   >
-                    {isRtl ? "إلغاء" : "Annuler"}
+                    {t.cancel}
                   </button>
                 </motion.div>
               )}
@@ -1390,7 +1471,7 @@ function App() {
               ) : (
                 <Download size={16} />
               )}
-              {isExporting ? (isRtl ? "جاري التصدير..." : "Exportation...") : t.exportPDF}
+              {isExporting ? t.exporting : t.exportPDF}
             </button>
           </div>
         </header>
@@ -1435,7 +1516,7 @@ function App() {
                           <td className="px-3 sm:px-6 py-4">
                             <input 
                               type="text" 
-                              placeholder="P1"
+                              placeholder={t.markPlaceholder}
                               value={item.mark || ''}
                               onChange={(e) => updateItem(item.id, { mark: e.target.value })}
                               className="bg-transparent border-none focus:ring-0 w-full font-mono text-xs text-slate-500 outline-none"
@@ -1497,8 +1578,8 @@ function App() {
                                         <input 
                                           type="number"
                                           step="0.01"
-                                          value={item.customLinearMass}
-                                          onChange={(e) => updateItem(item.id, { customLinearMass: Number(e.target.value) })}
+                                          value={item.customLinearMass || ''}
+                                          onChange={(e) => updateItem(item.id, { customLinearMass: e.target.value === '' ? 0 : Number(e.target.value) })}
                                           className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs w-16 outline-none focus:ring-2 focus:ring-indigo-500"
                                         />
                                       </div>
@@ -1513,33 +1594,33 @@ function App() {
                           <td className="px-3 sm:px-6 py-4">
                             <div className="flex items-center gap-2">
                               <div className="flex flex-col">
-                                <span className="text-[8px] text-slate-400 uppercase font-bold">Long.</span>
+                                <span className="text-[8px] text-slate-400 uppercase font-bold">{t.length} ({t.m})</span>
                                 <input 
                                   type="number" 
                                   step="0.01"
-                                  value={item.length}
-                                  onChange={(e) => updateItem(item.id, { length: Number(e.target.value) })}
+                                  value={item.length || ''}
+                                  onChange={(e) => updateItem(item.id, { length: e.target.value === '' ? 0 : Number(e.target.value) })}
                                   className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-sm w-20 outline-none focus:ring-2 focus:ring-indigo-500"
                                 />
                               </div>
                               {item.type === ItemType.PLATE && (
                                 <>
                                   <div className="flex flex-col">
-                                    <span className="text-[8px] text-slate-400 uppercase font-bold">Larg.</span>
+                                    <span className="text-[8px] text-slate-400 uppercase font-bold">{t.width} ({t.m})</span>
                                     <input 
                                       type="number" 
                                       step="0.01"
-                                      value={item.width}
-                                      onChange={(e) => updateItem(item.id, { width: Number(e.target.value) })}
+                                      value={item.width || ''}
+                                      onChange={(e) => updateItem(item.id, { width: e.target.value === '' ? 0 : Number(e.target.value) })}
                                       className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-sm w-20 outline-none focus:ring-2 focus:ring-indigo-500"
                                     />
                                   </div>
                                   <div className="flex flex-col">
-                                    <span className="text-[8px] text-slate-400 uppercase font-bold">Ep. (mm)</span>
+                                    <span className="text-[8px] text-slate-400 uppercase font-bold">{t.thickness} ({t.mm})</span>
                                     <input 
                                       type="number" 
-                                      value={item.thickness}
-                                      onChange={(e) => updateItem(item.id, { thickness: Number(e.target.value) })}
+                                      value={item.thickness || ''}
+                                      onChange={(e) => updateItem(item.id, { thickness: e.target.value === '' ? 0 : Number(e.target.value) })}
                                       className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-sm w-16 outline-none focus:ring-2 focus:ring-indigo-500"
                                     />
                                   </div>
@@ -1550,8 +1631,8 @@ function App() {
                           <td className="px-3 sm:px-6 py-4">
                             <input 
                               type="number" 
-                              value={item.quantity}
-                              onChange={(e) => updateItem(item.id, { quantity: Number(e.target.value) })}
+                              value={item.quantity || ''}
+                              onChange={(e) => updateItem(item.id, { quantity: e.target.value === '' ? 0 : Number(e.target.value) })}
                               className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-sm w-16 outline-none focus:ring-2 focus:ring-indigo-500"
                             />
                           </td>
@@ -1562,7 +1643,7 @@ function App() {
                             <button 
                               onClick={() => removeItem(item.id)}
                               className="p-2 text-slate-300 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all cursor-pointer group/del"
-                              title="Supprimer"
+                              title={t.delete}
                             >
                               <Trash2 size={18} className="group-hover/del:scale-110 transition-transform" />
                             </button>
@@ -1585,8 +1666,8 @@ function App() {
                                     <FileUp size={24} />
                                   </div>
                                   <div className="text-center">
-                                    <p className="text-sm font-bold text-slate-600">Importer par IA</p>
-                                    <p className="text-[10px] text-slate-400 mt-1">PDF ou Image (Liste débitage)</p>
+                                    <p className="text-sm font-bold text-slate-600">{t.importIA}</p>
+                                    <p className="text-[10px] text-slate-400 mt-1">{t.importIADesc}</p>
                                   </div>
                                 </div>
                               </div>
@@ -1598,8 +1679,8 @@ function App() {
                                   <Plus size={24} />
                                 </div>
                                 <div className="text-center">
-                                  <p className="text-sm font-bold text-slate-600">Saisie Profilé</p>
-                                  <p className="text-[10px] text-slate-400 mt-1">Ajouter une barre</p>
+                                  <p className="text-sm font-bold text-slate-600">{t.addProfile}</p>
+                                  <p className="text-[10px] text-slate-400 mt-1">{t.addProfileDesc}</p>
                                 </div>
                               </div>
                               <div 
@@ -1610,8 +1691,8 @@ function App() {
                                   <Layers size={24} />
                                 </div>
                                 <div className="text-center">
-                                  <p className="text-sm font-bold text-slate-600">Saisie Platine</p>
-                                  <p className="text-[10px] text-slate-400 mt-1">Ajouter une tôle</p>
+                                  <p className="text-sm font-bold text-slate-600">{t.addPlate}</p>
+                                  <p className="text-[10px] text-slate-400 mt-1">{t.addPlateDesc}</p>
                                 </div>
                               </div>
                             </div>
@@ -1635,14 +1716,14 @@ function App() {
                     className="flex items-center gap-2 px-6 py-3 bg-white border border-slate-200 rounded-2xl text-sm font-bold text-indigo-600 hover:bg-indigo-50 transition-all shadow-sm cursor-pointer"
                   >
                     <Plus size={18} />
-                    Ajouter Profilé
+                    {t.addProfile}
                   </button>
                   <button 
                     onClick={() => addItem(ItemType.PLATE)}
                     className="flex items-center gap-2 px-6 py-3 bg-white border border-slate-200 rounded-2xl text-sm font-bold text-indigo-600 hover:bg-indigo-50 transition-all shadow-sm cursor-pointer"
                   >
                     <Layers size={18} />
-                    Ajouter Platine
+                    {t.addPlate}
                   </button>
                 </div>
               )}
@@ -1675,7 +1756,7 @@ function App() {
                           type="text"
                           value={companyInfo.name}
                           onChange={(e) => setCompanyInfo({ ...companyInfo, name: e.target.value })}
-                          placeholder="Ex: Steel Pro Solutions"
+                          placeholder={t.companyNamePlaceholder}
                           className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
                         />
                       </div>
@@ -1685,7 +1766,7 @@ function App() {
                           type="text"
                           value={companyInfo.description}
                           onChange={(e) => setCompanyInfo({ ...companyInfo, description: e.target.value })}
-                          placeholder="Ex: Experts en charpente métallique"
+                          placeholder={t.companyDescPlaceholder}
                           className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
                         />
                       </div>
@@ -1782,7 +1863,7 @@ function App() {
                       </div>
                       <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">{t.netWeight}</span>
                     </div>
-                    <div className="text-3xl font-bold text-slate-900">{results.netWeight.toFixed(2)} <span className="text-sm font-normal text-slate-400">kg</span></div>
+                    <div className="text-3xl font-bold text-slate-900">{results.netWeight.toFixed(2)} <span className="text-sm font-normal text-slate-400">{t.kg}</span></div>
                     <p className="text-xs text-slate-400 mt-2">{t.theoreticalWeight}</p>
                   </div>
                   <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
@@ -1792,7 +1873,7 @@ function App() {
                       </div>
                       <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">{t.grossWeight}</span>
                     </div>
-                    <div className="text-3xl font-bold text-slate-900">{results.grossWeight.toFixed(2)} <span className="text-sm font-normal text-slate-400">kg</span></div>
+                    <div className="text-3xl font-bold text-slate-900">{results.grossWeight.toFixed(2)} <span className="text-sm font-normal text-slate-400">{t.kg}</span></div>
                     <p className="text-xs text-slate-400 mt-2">{t.totalWithBars}</p>
                   </div>
                   <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm">
@@ -1802,7 +1883,7 @@ function App() {
                       </div>
                       <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">{t.scrap}</span>
                     </div>
-                    <div className="text-3xl font-bold text-red-600">{results.scrapWeight.toFixed(2)} <span className="text-sm font-normal text-slate-400">kg</span></div>
+                    <div className="text-3xl font-bold text-red-600">{results.scrapWeight.toFixed(2)} <span className="text-sm font-normal text-slate-400">{t.kg}</span></div>
                     <p className="text-xs text-slate-400 mt-2">{results.scrapPercentage.toFixed(1)}% {t.scrapLoss}</p>
                   </div>
                 </div>
@@ -1824,7 +1905,7 @@ function App() {
                               <span className="text-sm font-bold text-slate-900">{plan.profileName}</span>
                               <span className="text-xs text-slate-400 ml-2">{items.filter(i => (i.profileId || i.customProfileName) === plan.profileId).length} types</span>
                             </div>
-                            <span className="text-sm font-mono text-slate-500">{profileNet.toFixed(2)} kg</span>
+                            <span className="text-sm font-mono text-slate-500">{profileNet.toFixed(2)} {t.kg}</span>
                           </div>
                           <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
                             <motion.div 
@@ -1844,10 +1925,10 @@ function App() {
                         <div key={`summary-plate-${plan.thickness}`} className="group">
                           <div className="flex justify-between items-end mb-2">
                             <div>
-                              <span className="text-sm font-bold text-slate-900">Platines Ep. {plan.thickness}mm</span>
+                              <span className="text-sm font-bold text-slate-900">{t.plate} {t.thickness} {plan.thickness}{t.mm}</span>
                               <span className="text-xs text-slate-400 ml-2">{items.filter(i => i.type === ItemType.PLATE && i.thickness === plan.thickness).length} types</span>
                             </div>
-                            <span className="text-sm font-mono text-slate-500">{plateNet.toFixed(2)} kg</span>
+                            <span className="text-sm font-mono text-slate-500">{plateNet.toFixed(2)} {t.kg}</span>
                           </div>
                           <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
                             <motion.div 
@@ -1862,6 +1943,68 @@ function App() {
                   </div>
                 </div>
 
+                {/* Optimization Options (10 Probabilities) */}
+                <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm">
+                  <div className="flex items-center justify-between mb-6">
+                    <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                      <Calculator size={20} className="text-indigo-600" />
+                      {t.optimizationOptions}
+                    </h3>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {optimizationOptions.map((option) => (
+                      <button
+                        key={option.strategy}
+                        onClick={() => setOptimizationStrategy(option.strategy)}
+                        className={cn(
+                          "p-4 rounded-2xl border-2 transition-all text-left group relative overflow-hidden",
+                          optimizationStrategy === option.strategy 
+                            ? "border-indigo-600 bg-indigo-50" 
+                            : "border-slate-100 hover:border-indigo-200 bg-white"
+                        )}
+                      >
+                        <div className="flex justify-between items-start mb-2">
+                          <span className={cn(
+                            "text-sm font-bold",
+                            optimizationStrategy === option.strategy ? "text-indigo-900" : "text-slate-700"
+                          )}>
+                            {t[`strategy_${option.strategy}` as keyof typeof t] || option.strategy}
+                          </span>
+                          {optimizationStrategy === option.strategy && (
+                            <Check className="w-4 h-4 text-indigo-600" />
+                          )}
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="flex flex-col">
+                            <span className="text-[10px] text-slate-400 uppercase font-bold">{t.scrapPercentage}</span>
+                            <span className={cn(
+                              "text-lg font-bold",
+                              option.scrapPercentage < 10 ? "text-emerald-600" : "text-amber-600"
+                            )}>{option.scrapPercentage.toFixed(1)}%</span>
+                          </div>
+                          <div className="flex flex-col">
+                            <span className="text-[10px] text-slate-400 uppercase font-bold">{t.totalWeight}</span>
+                            <span className="text-lg font-bold text-slate-900">{option.grossWeight.toFixed(0)} {t.kg}</span>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 flex gap-4 text-[10px] text-slate-500 font-medium">
+                          <span>{option.totalBars} {t.totalBarsNeeded}</span>
+                          <span>{option.totalSheets} {t.totalSheetsNeeded}</span>
+                        </div>
+
+                        {optimizationStrategy === option.strategy && (
+                          <div className="absolute top-0 right-0 w-12 h-12 bg-indigo-600/10 rounded-bl-full flex items-center justify-center">
+                            <Check className="w-4 h-4 text-indigo-600 translate-x-1 -translate-y-1" />
+                          </div>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 {/* Gross Bars Table */}
                 <div className="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
                   <h3 className="text-lg font-bold text-slate-900 mb-6 flex items-center gap-2">
@@ -1873,9 +2016,9 @@ function App() {
                       <thead>
                         <tr className="border-b border-slate-100">
                           <th className={cn("py-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider", isRtl ? "text-right" : "text-left")}>{t.tableType}</th>
-                          <th className={cn("py-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider", isRtl ? "text-right" : "text-left")}>{t.length} (m)</th>
+                          <th className={cn("py-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider", isRtl ? "text-right" : "text-left")}>{t.length} ({t.m})</th>
                           <th className={cn("py-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider", isRtl ? "text-left" : "text-right")}>{t.tableQty}</th>
-                          <th className={cn("py-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider", isRtl ? "text-left" : "text-right")}>{t.weight} (kg)</th>
+                          <th className={cn("py-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider", isRtl ? "text-left" : "text-right")}>{t.weight} ({t.kg})</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-50">
@@ -1904,9 +2047,9 @@ function App() {
                         <tr className="border-b border-slate-100">
                           <th className={cn("py-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider", isRtl ? "text-right" : "text-left")}>{t.tableMark}</th>
                           <th className={cn("py-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider", isRtl ? "text-right" : "text-left")}>{t.tableType}</th>
-                          <th className={cn("py-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider", isRtl ? "text-right" : "text-left")}>{t.length} (m)</th>
+                          <th className={cn("py-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider", isRtl ? "text-right" : "text-left")}>{t.length} ({t.m})</th>
                           <th className={cn("py-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider", isRtl ? "text-left" : "text-right")}>{t.tableQty}</th>
-                          <th className={cn("py-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider", isRtl ? "text-left" : "text-right")}>{t.weight} (kg)</th>
+                          <th className={cn("py-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider", isRtl ? "text-left" : "text-right")}>{t.weight} ({t.kg})</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-50">
@@ -1940,7 +2083,7 @@ function App() {
                       <h3 className="font-bold text-emerald-900">{t.bestStrategy}</h3>
                     </div>
                     <p className="text-sm text-emerald-700">
-                      {t.scrapSaved}: <span className="font-bold">{strategyComparison.saving.toFixed(2)} kg</span> ({strategyComparison.savingPercent.toFixed(1)}%) {t.comparedTo} {strategyComparison.worst.strategy === OptimizationStrategy.FIRST_FIT ? t.firstFit : strategyComparison.worst.strategy === OptimizationStrategy.BEST_FIT ? t.bestFit : t.nextFit}.
+                      {t.scrapSaved}: <span className="font-bold">{strategyComparison.saving.toFixed(2)} {t.kg}</span> ({strategyComparison.savingPercent.toFixed(1)}%) {t.comparedTo} {strategyComparison.worst.strategy === OptimizationStrategy.FIRST_FIT ? t.firstFit : strategyComparison.worst.strategy === OptimizationStrategy.BEST_FIT ? t.bestFit : t.nextFit}.
                     </p>
                     {optimizationStrategy !== strategyComparison.best.strategy && (
                       <button 
@@ -1957,7 +2100,7 @@ function App() {
 
               <div className="space-y-6">
                 <div id="weight-chart-container" className="bg-white p-4 sm:p-8 rounded-3xl border border-slate-200 shadow-sm h-[400px] flex flex-col">
-                  <h3 className="text-lg font-bold text-slate-900 mb-2">{isRtl ? "توزيع الوزن" : "Répartition du Poids"}</h3>
+                  <h3 className="text-lg font-bold text-slate-900 mb-2">{t.weightDistribution}</h3>
                   <div className="flex-1">
                     <ResponsiveContainer width="100%" height="100%">
                       <PieChart id="weight-chart">
@@ -1984,7 +2127,7 @@ function App() {
                 </div>
 
                 <div id="distribution-chart-container" className="bg-white p-4 sm:p-8 rounded-3xl border border-slate-200 shadow-sm h-[400px] flex flex-col">
-                  <h3 className="text-lg font-bold text-slate-900 mb-2">{isRtl ? "توزيع المقاطع" : "Répartition par Profil"}</h3>
+                  <h3 className="text-lg font-bold text-slate-900 mb-2">{t.profileDistribution}</h3>
                   <div className="flex-1">
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={profileDistributionData} id="distribution-chart">
@@ -2011,7 +2154,7 @@ function App() {
                 </div>
 
                 <div id="efficiency-chart-container" className="bg-white p-4 sm:p-8 rounded-3xl border border-slate-200 shadow-sm h-[400px] flex flex-col">
-                  <h3 className="text-lg font-bold text-slate-900 mb-2">{isRtl ? "كفاءة التقطيع لكل مقطع" : "Efficacité par Profil"}</h3>
+                  <h3 className="text-lg font-bold text-slate-900 mb-2">{t.profileEfficiency}</h3>
                   <div className="flex-1">
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={profileEfficiencyData} layout="vertical" id="efficiency-chart">
@@ -2037,7 +2180,7 @@ function App() {
                 </div>
 
                 <div id="stacked-chart-container" className="bg-white p-4 sm:p-8 rounded-3xl border border-slate-200 shadow-sm h-[400px] flex flex-col">
-                  <h3 className="text-lg font-bold text-slate-900 mb-2">{isRtl ? "الوزن الصافي مقابل الخردة" : "Net vs Chutes par Profil"}</h3>
+                  <h3 className="text-lg font-bold text-slate-900 mb-2">{t.netVsScrap}</h3>
                   <div className="flex-1">
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={profileEfficiencyData} id="stacked-chart">
@@ -2058,8 +2201,8 @@ function App() {
                           contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)' }}
                         />
                         <Legend verticalAlign="top" align="right" iconType="circle" />
-                        <Bar dataKey="net" name={isRtl ? "صافي" : "Net"} stackId="a" fill="#6366f1" radius={[0, 0, 0, 0]} />
-                        <Bar dataKey="scrap" name={isRtl ? "خردة" : "Chutes"} stackId="a" fill="#f43f5e" radius={[4, 4, 0, 0]} />
+                        <Bar dataKey="net" name={t.net} stackId="a" fill="#6366f1" radius={[0, 0, 0, 0]} />
+                        <Bar dataKey="scrap" name={t.scrap} stackId="a" fill="#f43f5e" radius={[4, 4, 0, 0]} />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
@@ -2095,7 +2238,7 @@ function App() {
                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
                   <div>
                     <h3 className="text-xl font-bold text-slate-900">{t.extras}</h3>
-                    <p className="text-sm text-slate-400">Calculés sur le poids brut total</p>
+                    <p className="text-sm text-slate-400">{t.calculatedOnGross}</p>
                   </div>
                   <div className="flex flex-wrap gap-4 items-center">
                     <button 
@@ -2104,7 +2247,7 @@ function App() {
                       className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-bold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100 disabled:opacity-50"
                     >
                       <FileText size={18} />
-                      {isRtl ? "تحميل التقرير الكامل" : "Télécharger le Rapport Complet"}
+                      {t.downloadFullReport}
                     </button>
                     <label className="flex items-center gap-2 cursor-pointer group">
                       <div className={cn(
@@ -2202,7 +2345,7 @@ function App() {
                       return (
                         <tr key={`boq-plate-${plan.thickness}`} className="hover:bg-slate-50/30 transition-colors">
                           <td className="px-4 sm:px-8 py-5">
-                            <div className="font-bold text-slate-900">{t.plate} Ep. {plan.thickness}mm</div>
+                            <div className="font-bold text-slate-900">{t.plate} {t.ep} {plan.thickness}mm</div>
                             <div className="text-xs text-slate-400">{sheetSize}</div>
                           </td>
                           <td className="px-4 sm:px-8 py-5 text-sm text-slate-500">{t.unit}</td>
@@ -2251,7 +2394,7 @@ function App() {
                           (includeWelding ? results.grossWeight * 0.05 : 0) + 
                           (includeExtraPlates ? results.grossWeight * 0.05 : 0) + 
                           (includeBolts ? results.grossWeight * 0.02 : 0)
-                        ).toFixed(2)} kg
+                        ).toFixed(2)} {t.kg}
                       </td>
                     </tr>
                   </tbody>
@@ -2279,7 +2422,7 @@ function App() {
                       className="flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-all shadow-lg shadow-slate-100 disabled:opacity-50"
                     >
                       <Download size={14} />
-                      {isRtl ? "تصدير الفاتورة" : "Exporter Facture"}
+                      {t.exportInvoice}
                     </button>
                   </div>
                   <div className="p-6 lg:p-8 space-y-6">
@@ -2289,7 +2432,7 @@ function App() {
                           <div className="text-slate-600">{t.devisSupply}</div>
                           <div className={cn("flex flex-col", isRtl ? "sm:items-start" : "sm:items-end")}>
                             <div className="font-mono font-bold text-slate-900">
-                              {totalWeightWithExtras.toFixed(2)} kg × {devisConfig.unitPricePerKg.toFixed(2)} {devisConfig.currency}/kg
+                              {totalWeightWithExtras.toFixed(2)} {t.kg} × {devisConfig.unitPricePerKg.toFixed(2)} {devisConfig.currency}/{t.kg}
                             </div>
                             <div className="text-lg font-bold text-slate-900">
                               {(totalWeightWithExtras * devisConfig.unitPricePerKg).toFixed(2)} {devisConfig.currency}
@@ -2337,7 +2480,7 @@ function App() {
                           onChange={(e) => setDevisConfig({ ...devisConfig, unitPricePerKg: Number(e.target.value) })}
                           className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
                         />
-                        <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">{devisConfig.currency}</span>
+                        <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">{devisConfig.currency === 'DZD' ? t.dzd : devisConfig.currency}</span>
                       </div>
                     </div>
                     <div>
@@ -2356,7 +2499,7 @@ function App() {
                         onChange={(e) => setDevisConfig({ ...devisConfig, currency: e.target.value })}
                         className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
                       >
-                        <option value="DZD">Dinar Algérien (DZD)</option>
+                        <option value="DZD">{t.dinarAlgerien}</option>
                       </select>
                     </div>
                   </div>
@@ -2467,7 +2610,7 @@ function App() {
                     <thead>
                       <tr className="bg-slate-50/50">
                         <th className="px-6 py-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider">{t.tableType}</th>
-                        <th className="px-6 py-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider text-right">{t.totalWeight} (kg)</th>
+                        <th className="px-6 py-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider text-right">{t.totalWeight} ({t.kg})</th>
                         <th className="px-6 py-4 text-[11px] font-bold text-slate-400 uppercase tracking-wider text-right">{t.totalBars} / {t.plates}</th>
                       </tr>
                     </thead>
@@ -2481,7 +2624,7 @@ function App() {
                       ))}
                       {results.platePlans.map(plan => (
                         <tr key={plan.thickness} className="hover:bg-slate-50/50 transition-colors">
-                          <td className="px-6 py-4 font-medium text-slate-700">{t.plate} Ep. {plan.thickness}mm</td>
+                          <td className="px-6 py-4 font-medium text-slate-700">{t.plate} {t.ep} {plan.thickness}mm</td>
                           <td className="px-6 py-4 text-right font-mono text-slate-900">{plan.grossWeight.toFixed(2)}</td>
                           <td className="px-6 py-4 text-right text-slate-500">{plan.sheets.length}</td>
                         </tr>
@@ -2502,7 +2645,7 @@ function App() {
                     <div key={plan.profileId} className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
                       <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
                         <h4 className="font-bold text-slate-900">{plan.profileName}</h4>
-                        <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">{plan.bars.length} Barres de {standardBarLength}m</span>
+                        <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">{plan.bars.length} {t.barsOf} {standardBarLength}m</span>
                       </div>
                       <div className="p-6 space-y-6">
                         {plan.bars.map((bar, idx) => (
@@ -2527,7 +2670,7 @@ function App() {
                                 className="h-full bg-red-500 flex items-center justify-center text-[9px] font-bold text-white overflow-hidden px-1"
                                 title={`Chute: ${bar.scrap.toFixed(2)}m`}
                               >
-                                <span className="truncate">{bar.scrap > 0.05 ? `CHUTE: ${bar.scrap.toFixed(2)}m` : bar.scrap > 0.01 ? `${bar.scrap.toFixed(2)}m` : ''}</span>
+                                <span className="truncate">{bar.scrap > 0.05 ? `${t.chuteLabel} ${bar.scrap.toFixed(2)}m` : bar.scrap > 0.01 ? `${bar.scrap.toFixed(2)}m` : ''}</span>
                               </div>
                             </div>
                           </div>
@@ -2548,8 +2691,8 @@ function App() {
                   {results.platePlans.map((plan) => (
                     <div key={plan.thickness} className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden">
                       <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-                        <h4 className="font-bold text-slate-900">{t.plate} Ep. {plan.thickness}mm</h4>
-                        <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">{plan.sheets.length} {t.plates} {standardPlateSize.name}</span>
+                        <h4 className="font-bold text-slate-900">{t.plate} {t.ep} {plan.thickness}mm</h4>
+                        <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">{plan.sheets.length} {t.plates} {standardPlateSize.name === "Tôles Standard" || standardPlateSize.name === "Standard Sheets" ? t.standardSheets : standardPlateSize.name}</span>
                       </div>
                       <div className="p-6 lg:p-8 grid grid-cols-1 lg:grid-cols-2 gap-8">
                         {plan.sheets.map((sheet, idx) => (
@@ -2560,7 +2703,7 @@ function App() {
                                 <button 
                                   onClick={() => setSelectedSheet({ ...sheet, thickness: plan.thickness })}
                                   className="p-1 hover:bg-slate-100 rounded-md text-indigo-600 transition-colors"
-                                  title="Zoom"
+                                  title={t.zoom}
                                 >
                                   <ZoomIn size={14} />
                                 </button>
@@ -2656,7 +2799,7 @@ function App() {
               <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
                 <div>
                   <h3 className="text-xl font-bold text-slate-900">
-                    {t.plate} Ep. {selectedSheet.thickness}mm - {selectedSheet.id}
+                    {t.plate} {t.ep} {selectedSheet.thickness}mm - {selectedSheet.id}
                   </h3>
                   <p className="text-sm text-slate-500">
                     {selectedSheet.width}x{selectedSheet.length}m | {((selectedSheet.usedArea / (selectedSheet.width * selectedSheet.length)) * 100).toFixed(1)}% {t.used}

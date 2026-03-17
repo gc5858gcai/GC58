@@ -58,7 +58,21 @@ export interface StockItem {
 export enum OptimizationStrategy {
   FIRST_FIT = 'FIRST_FIT',
   BEST_FIT = 'BEST_FIT',
-  NEXT_FIT = 'NEXT_FIT'
+  NEXT_FIT = 'NEXT_FIT',
+  AREA_DESC = 'AREA_DESC',
+  WIDTH_DESC = 'WIDTH_DESC',
+  LENGTH_DESC = 'LENGTH_DESC',
+  SIDE_DESC = 'SIDE_DESC',
+  PERIMETER_DESC = 'PERIMETER_DESC',
+  MAX_SIDE_DESC = 'MAX_SIDE_DESC',
+  MIN_SIDE_DESC = 'MIN_SIDE_DESC'
+}
+
+export interface OptimizationOption {
+  strategy: OptimizationStrategy;
+  scrapPercentage: number;
+  scrapWeight: number;
+  result: CalculationResult;
 }
 
 export interface BarCuttingPlan {

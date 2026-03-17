@@ -13,11 +13,13 @@ export function calculateSteelRequirements(
 
   items.forEach((item) => {
     if (item.type === ItemType.PROFILE) {
+      if (item.length <= 0 || item.quantity <= 0) return;
       const key = item.profileId || item.customProfileName || 'unknown';
       const list = profileGroups.get(key) || [];
       list.push(item);
       profileGroups.set(key, list);
     } else if (item.type === ItemType.PLATE && item.thickness) {
+      if ((item.width || 0) <= 0 || item.length <= 0 || item.quantity <= 0) return;
       const list = plateGroups.get(item.thickness) || [];
       list.push(item);
       plateGroups.set(item.thickness, list);
@@ -145,8 +147,33 @@ export function calculateSteelRequirements(
       }
     });
 
-    // Sort groups by area descending
-    const sortedGroups = Array.from(plateCounts.values()).sort((a, b) => (b.plate.w * b.plate.l) - (a.plate.w * a.plate.l));
+    // Sort groups based on strategy
+    const groups = Array.from(plateCounts.values());
+    switch (strategy) {
+      case OptimizationStrategy.AREA_DESC:
+        groups.sort((a, b) => (b.plate.w * b.plate.l) - (a.plate.w * a.plate.l));
+        break;
+      case OptimizationStrategy.WIDTH_DESC:
+        groups.sort((a, b) => b.plate.w - a.plate.w);
+        break;
+      case OptimizationStrategy.LENGTH_DESC:
+        groups.sort((a, b) => b.plate.l - a.plate.l);
+        break;
+      case OptimizationStrategy.SIDE_DESC:
+        groups.sort((a, b) => (b.plate.w + b.plate.l) - (a.plate.w + a.plate.l));
+        break;
+      case OptimizationStrategy.PERIMETER_DESC:
+        groups.sort((a, b) => 2 * (b.plate.w + b.plate.l) - 2 * (a.plate.w + a.plate.l));
+        break;
+      case OptimizationStrategy.MAX_SIDE_DESC:
+        groups.sort((a, b) => Math.max(b.plate.w, b.plate.l) - Math.max(a.plate.w, a.plate.l));
+        break;
+      case OptimizationStrategy.MIN_SIDE_DESC:
+        groups.sort((a, b) => Math.min(b.plate.w, b.plate.l) - Math.min(a.plate.w, a.plate.l));
+        break;
+      default:
+        groups.sort((a, b) => (b.plate.w * b.plate.l) - (a.plate.w * a.plate.l));
+    }
 
     const refinedSheets: PlateCuttingPlan['sheets'] = [];
     
@@ -157,7 +184,7 @@ export function calculateSteelRequirements(
       l: number;
     }
 
-    sortedGroups.forEach(group => {
+    groups.forEach(group => {
       let remainingCount = group.count;
       const plate = group.plate;
 
@@ -166,11 +193,9 @@ export function calculateSteelRequirements(
       const fitsRotated = plate.l <= standardPlateSize.width && plate.w <= standardPlateSize.length;
       
       if (!fitsNormal && !fitsRotated) {
-        // Create custom sheets for these oversized items so they aren't lost in calculation
         while (remainingCount > 0) {
           const pw = plate.w;
           const pl = plate.l;
-          
           const newSheet: PlateCuttingPlan['sheets'][0] = {
             id: `sheet-custom-${refinedSheets.length + 1}`,
             width: pw,
@@ -179,9 +204,7 @@ export function calculateSteelRequirements(
             cuts: [{ ...plate, x: 0, y: 0, w: pw, l: pl }],
             scrapArea: 0,
           };
-
           (newSheet as any).freeRects = [];
-          (newSheet as any).isCustomSize = true;
           refinedSheets.push(newSheet);
           remainingCount--;
         }
@@ -197,15 +220,16 @@ export function calculateSteelRequirements(
         let bestCols = 1;
         let maxFitInRect = 0;
 
-        // Find the best rectangle to fit as many as possible of this group
-        for (let sIdx = 0; sIdx < refinedSheets.length; sIdx++) {
+        // Optimization: only check the last 3 sheets to avoid O(N^2)
+        const startIdx = Math.max(0, refinedSheets.length - 3);
+        for (let sIdx = startIdx; sIdx < refinedSheets.length; sIdx++) {
           const sheet = refinedSheets[sIdx];
           const freeRects: FreeRect[] = (sheet as any).freeRects || [];
 
           for (let rIdx = 0; rIdx < freeRects.length; rIdx++) {
             const rect = freeRects[rIdx];
 
-            // Try normal orientation
+            // Try normal
             const colsN = Math.floor(rect.w / plate.w);
             const rowsN = Math.floor(rect.l / plate.l);
             const fitN = Math.min(colsN * rowsN, remainingCount);
@@ -220,7 +244,7 @@ export function calculateSteelRequirements(
               placed = true;
             }
 
-            // Try rotated orientation
+            // Try rotated
             const colsR = Math.floor(rect.w / plate.l);
             const rowsR = Math.floor(rect.l / plate.w);
             const fitR = Math.min(colsR * rowsR, remainingCount);
@@ -235,6 +259,7 @@ export function calculateSteelRequirements(
               placed = true;
             }
           }
+          if (placed && maxFitInRect >= remainingCount) break; // Found a perfect fit
         }
 
         if (placed && maxFitInRect > 0) {
@@ -245,7 +270,6 @@ export function calculateSteelRequirements(
           const pw = bestOrientation === 'normal' ? plate.w : plate.l;
           const pl = bestOrientation === 'normal' ? plate.l : plate.w;
 
-          // Place the block of identical plates
           let currentInBlock = 0;
           for (let r = 0; r < bestRows && remainingCount > 0; r++) {
             for (let c = 0; c < bestCols && remainingCount > 0; c++) {
@@ -263,10 +287,8 @@ export function calculateSteelRequirements(
             }
           }
 
-          // Split the remaining rectangle around the block
           const blockW = Math.min(bestCols, currentInBlock) * pw;
           const blockL = bestRows * pl;
-
           const dw = rect.w - blockW;
           const dl = rect.l - blockL;
 
@@ -274,11 +296,8 @@ export function calculateSteelRequirements(
           if (dl > 0) freeRects.push({ x: rect.x, y: rect.y + blockL, w: blockW, l: dl });
           
           freeRects.sort((a, b) => (b.w * b.l) - (a.w * a.l));
+          if (freeRects.length > 50) freeRects.length = 50; // Limit free rects to prevent lag
         } else {
-          // Open a new sheet and place as many as possible
-          const pw = plate.w;
-          const pl = plate.l;
-          
           const newSheet: PlateCuttingPlan['sheets'][0] = {
             id: `sheet-${refinedSheets.length + 1}`,
             width: standardPlateSize.width,
@@ -287,11 +306,8 @@ export function calculateSteelRequirements(
             cuts: [],
             scrapArea: standardPlateSize.width * standardPlateSize.length,
           };
-
-          const freeRects: FreeRect[] = [{ x: 0, y: 0, w: standardPlateSize.width, l: standardPlateSize.length }];
-          (newSheet as any).freeRects = freeRects;
+          (newSheet as any).freeRects = [{ x: 0, y: 0, w: standardPlateSize.width, l: standardPlateSize.length }];
           refinedSheets.push(newSheet);
-          // Loop will pick this up in the next iteration
         }
       }
     });
@@ -326,4 +342,39 @@ export function calculateSteelRequirements(
     barPlans,
     platePlans,
   };
+}
+
+export function getOptimizationOptions(
+  items: ProjectItem[],
+  standardBarLength: number,
+  standardPlateSize: { width: number; length: number },
+  grade: SteelGrade = SteelGrade.E24
+): any[] {
+  const strategies = [
+    OptimizationStrategy.AREA_DESC,
+    OptimizationStrategy.WIDTH_DESC,
+    OptimizationStrategy.LENGTH_DESC,
+    OptimizationStrategy.SIDE_DESC,
+    OptimizationStrategy.PERIMETER_DESC,
+    OptimizationStrategy.MAX_SIDE_DESC,
+    OptimizationStrategy.MIN_SIDE_DESC,
+    OptimizationStrategy.FIRST_FIT,
+    OptimizationStrategy.BEST_FIT,
+    OptimizationStrategy.NEXT_FIT
+  ];
+
+  return strategies.map(strategy => {
+    try {
+      const result = calculateSteelRequirements(items, standardBarLength, standardPlateSize, strategy, grade);
+      return {
+        strategy,
+        scrapPercentage: result.scrapPercentage,
+        scrapWeight: result.scrapWeight,
+        result
+      };
+    } catch (error) {
+      console.error(`Optimization failed for strategy ${strategy}:`, error);
+      return null;
+    }
+  }).filter(Boolean);
 }
